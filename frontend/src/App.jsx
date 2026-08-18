@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "./lib/supabase";
 import CivicCity from "./components/CivicCity";
+import CitizenAnimatedBackground from "./components/CitizenAnimatedBackground";
 
 import {
   BrowserRouter,
@@ -1133,6 +1134,7 @@ function CitizenLayout({ children }) {
       </aside>
 
       <div className="citizen-main-shell">
+        <CitizenAnimatedBackground />
         <header className="citizen-topbar">
           <div className="citizen-topbar-left">
             <button
