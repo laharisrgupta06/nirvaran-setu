@@ -288,8 +288,8 @@ function getGrievanceAISummary(grievance) {
   return `AI Analyzed: Citizen grievance regarding ${cat.toLowerCase()} ("${desc}") at ${loc}. Identified as requiring immediate on-site inspection and remedial action by the ${dept}.`;
 }
 
-function getGrievanceSolution(grievance) {
-  if (!grievance) return null;
+function getAdminDraftSolution(grievance) {
+  if (!grievance) return "";
 
   // 1. Direct proposed_solution property
   if (
@@ -316,43 +316,77 @@ function getGrievanceSolution(grievance) {
     if (extracted) return extracted;
   }
 
-  // 4. Default smart solution when status has reached Solution Proposed or beyond
-  const statusIndex = getStatusIndex(grievance.status);
-  if (statusIndex >= 1) {
-    const desc = (grievance.description || "").toLowerCase();
-    const loc = grievance.location || "the site";
-    const dept = grievance.department || "Municipal Corporation";
+  // 4. Category-based smart draft for the Admin to inspect & approve
+  const desc = (grievance.description || "").toLowerCase();
+  const loc = grievance.location || "the site";
+  const dept = grievance.department || "Municipal Corporation";
 
-    if (
-      desc.includes("water") ||
-      desc.includes("leak") ||
-      desc.includes("pipe") ||
-      desc.includes("drain")
-    ) {
-      return `Concerned technical team will inspect the water pipeline at ${loc}, replace faulty fittings/pipes, and restore normal flow by 21/08/2026.`;
-    }
-    if (
-      desc.includes("pothole") ||
-      desc.includes("road") ||
-      desc.includes("street")
-    ) {
-      return `Road maintenance crew dispatched with asphalt mixer to mill, level, and resurface damaged road section at ${loc}.`;
-    }
-    if (
-      desc.includes("garbage") ||
-      desc.includes("waste") ||
-      desc.includes("trash") ||
-      desc.includes("dump")
-    ) {
-      return `Sanitation team scheduled for immediate clearance and daily route monitoring at ${loc}.`;
-    }
-    if (desc.includes("light") || desc.includes("lamp")) {
-      return `Electrical wing technician assigned to inspect line continuity and replace damaged luminaire at ${loc}.`;
-    }
-    return `Inspection team from ${dept} assigned to execute on-site corrective measures at ${loc}.`;
+  if (
+    desc.includes("water") ||
+    desc.includes("leak") ||
+    desc.includes("pipe") ||
+    desc.includes("drain")
+  ) {
+    return `Concerned technical team will inspect the water pipeline at ${loc}, replace faulty fittings/pipes, and restore normal flow.`;
+  }
+  if (
+    desc.includes("pothole") ||
+    desc.includes("road") ||
+    desc.includes("street")
+  ) {
+    return `Road maintenance crew dispatched with asphalt mixer to mill, level, and resurface damaged road section at ${loc}.`;
+  }
+  if (
+    desc.includes("garbage") ||
+    desc.includes("waste") ||
+    desc.includes("trash") ||
+    desc.includes("dump")
+  ) {
+    return `Sanitation team scheduled for immediate clearance and daily route monitoring at ${loc}.`;
+  }
+  if (desc.includes("light") || desc.includes("lamp")) {
+    return `Electrical wing technician assigned to inspect line continuity and replace damaged luminaire at ${loc}.`;
+  }
+  return `Inspection team from ${dept} assigned to execute on-site corrective measures at ${loc}.`;
+}
+
+function getGrievanceSolution(grievance) {
+  if (!grievance) return null;
+
+  // IMPORTANT: Proposed solution must ONLY appear on the citizen panel
+  // after the admin has approved/advanced the stage to "Solution Proposed" or beyond (index >= 2)
+  const statusIndex = getStatusIndex(grievance.status);
+  if (statusIndex < 2) {
+    return null;
   }
 
-  return null;
+  // 1. Direct proposed_solution property
+  if (
+    grievance.proposed_solution &&
+    String(grievance.proposed_solution).trim()
+  ) {
+    return String(grievance.proposed_solution).trim();
+  }
+
+  // 2. Stored in GrievanceLocalStore
+  const stored = GrievanceLocalStore.getSolution(grievance.ticket_id);
+  if (stored && String(stored).trim()) {
+    return String(stored).trim();
+  }
+
+  // 3. Embedded in ai_summary
+  if (
+    grievance.ai_summary &&
+    String(grievance.ai_summary).includes("[PROPOSED SOLUTION]:")
+  ) {
+    const extracted = String(grievance.ai_summary)
+      .split("[PROPOSED SOLUTION]:")[1]
+      ?.trim();
+    if (extracted) return extracted;
+  }
+
+  // 4. Default smart approved solution for stage 2 and above
+  return getAdminDraftSolution(grievance);
 }
 
 function getGrievanceEvidence(grievance) {
@@ -1086,12 +1120,25 @@ function CitizenLayout({ children }) {
             )}
           </Link>
 
+          {/* Desktop collapse icon inside sidebar */}
           <button
-            className="citizen-sidebar-close"
+            type="button"
+            className="citizen-sidebar-collapse-btn desktop-only"
+            onClick={() => setCollapsed((v) => !v)}
+            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-label="Toggle sidebar width"
+          >
+            {collapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
+          </button>
+
+          {/* Mobile close icon inside sidebar */}
+          <button
+            type="button"
+            className="citizen-sidebar-close mobile-only"
             onClick={() => setMenuOpen(false)}
             aria-label="Close menu"
           >
-            <X size={20} />
+            <X size={22} />
           </button>
         </div>
 
@@ -1137,20 +1184,26 @@ function CitizenLayout({ children }) {
         <CitizenAnimatedBackground />
         <header className="citizen-topbar">
           <div className="citizen-topbar-left">
+            {/* 3-line Hamburger Menu Button for Mobile */}
             <button
+              type="button"
               className="citizen-mobile-menu"
-              onClick={() => setMenuOpen(true)}
-              aria-label="Open menu"
+              onClick={() => setMenuOpen((v) => !v)}
+              aria-label="Open navigation menu"
+              title="Menu"
             >
-              <Menu size={22} />
+              <Menu size={23} />
             </button>
 
+            {/* Desktop collapse/expand button */}
             <button
+              type="button"
               className="desktop-collapse-button"
               onClick={() => setCollapsed((v) => !v)}
               title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+              aria-label="Collapse or expand sidebar"
             >
-              {collapsed ? <PanelLeftOpen size={21} /> : <PanelLeftClose size={21} />}
+              {collapsed ? <PanelLeftOpen size={20} /> : <PanelLeftClose size={20} />}
             </button>
 
             <Link to="/" className="citizen-mobile-brand">
@@ -2481,47 +2534,6 @@ function GrievancesPage() {
                   </div>
                 )}
 
-                {/* PROPOSED SOLUTION BANNER */}
-                {solutionText && (
-                  <div
-                    className="proposed-solution-card"
-                    style={{
-                      margin: "16px 0",
-                      padding: "18px 20px",
-                      background: "#f0f7f3",
-                      border: "1.5px solid #b5d5c5",
-                      borderRadius: "14px",
-                      color: "#124d3d",
-                    }}
-                  >
-                    <div
-                      className="solution-card-header"
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "8px",
-                        fontSize: "13px",
-                        fontWeight: 700,
-                        color: "#0f4b3c",
-                        marginBottom: "6px",
-                      }}
-                    >
-                      <Wrench size={18} />
-                      <strong>Department Proposed Solution</strong>
-                    </div>
-                    <p
-                      style={{
-                        margin: 0,
-                        fontSize: "14px",
-                        lineHeight: 1.55,
-                        color: "#263b32",
-                      }}
-                    >
-                      {solutionText}
-                    </p>
-                  </div>
-                )}
-
                 <GrievanceTimeline grievance={grievance} />
 
                 <CitizenVerification
@@ -3140,7 +3152,7 @@ function AdminOperations() {
           {filteredGrievances.map((grievance, index) => {
             const open = selected?.id === grievance.id;
             const allowedStatuses = getAllowedStatuses(grievance);
-            const currentSol = getGrievanceSolution(grievance);
+            const currentSol = getAdminDraftSolution(grievance);
             const aiSummaryText = getGrievanceAISummary(grievance);
             const evidenceItems = getGrievanceEvidence(grievance);
 
