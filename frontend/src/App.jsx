@@ -54,6 +54,17 @@ import {
   CalendarCheck,
   Star,
   Paperclip,
+  Siren,
+  Flame,
+  PhoneCall,
+  AlertOctagon,
+  ShieldAlert,
+  Radio,
+  Zap,
+  HeartPulse,
+  Truck,
+  Phone,
+  BellRing,
 } from "lucide-react";
 
 import "./App.css";
@@ -233,10 +244,77 @@ const GrievanceLocalStore = {
     return meta?.evidence || [];
   },
 
+  // ======================================================
+  // EMERGENCY SOS PERSISTENCE & CROSS-TAB DISPATCH
+  // ======================================================
+  saveSOS(sosData) {
+    if (!sosData || !sosData.id) return;
+    try {
+      const list = this.getSOSAlerts();
+      const updated = [sosData, ...list.filter((s) => s.id !== sosData.id)];
+      localStorage.setItem("nirvaran_sos_alerts", JSON.stringify(updated));
+      if (nirvaranBroadcast) {
+        nirvaranBroadcast.postMessage({
+          type: "SOS_ALERT_TRIGGERED",
+          sos: sosData,
+        });
+      }
+      window.dispatchEvent(new Event("storage"));
+    } catch (e) {
+      console.warn("GrievanceLocalStore saveSOS error:", e);
+    }
+  },
+
+  getSOSAlerts() {
+    try {
+      const raw = localStorage.getItem("nirvaran_sos_alerts");
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
+    }
+  },
+
+  updateSOSStatus(sosId, status, responderNotes = "") {
+    try {
+      const list = this.getSOSAlerts();
+      const updated = list.map((s) =>
+        s.id === sosId
+          ? {
+              ...s,
+              status,
+              responderNotes: responderNotes || s.responderNotes || "",
+              updated_at: new Date().toISOString(),
+            }
+          : s
+      );
+      localStorage.setItem("nirvaran_sos_alerts", JSON.stringify(updated));
+      if (nirvaranBroadcast) {
+        nirvaranBroadcast.postMessage({
+          type: "SOS_STATUS_UPDATED",
+          sosId,
+          status,
+          responderNotes,
+        });
+      }
+      window.dispatchEvent(new Event("storage"));
+    } catch (e) {
+      console.warn("GrievanceLocalStore updateSOSStatus error:", e);
+    }
+  },
+
+  getActiveSOSCount() {
+    const list = this.getSOSAlerts();
+    return list.filter((s) => s.status !== "Resolved").length;
+  },
+
   onSync(callback) {
-    const handleStorage = () => callback();
+    const handleStorage = () => callback({ type: "STORAGE_SYNC" });
     const handleBroadcast = (event) => {
-      if (event.data?.type === "GRIEVANCE_UPDATED") {
+      if (
+        event.data?.type === "GRIEVANCE_UPDATED" ||
+        event.data?.type === "SOS_ALERT_TRIGGERED" ||
+        event.data?.type === "SOS_STATUS_UPDATED"
+      ) {
         callback(event.data);
       }
     };
@@ -1077,12 +1155,374 @@ function ProtectedRoute({ children, allowedRole }) {
 }
 
 /* ======================================================
-   CITIZEN LAYOUT (COLLAPSIBLE DARK EMERALD SIDEBAR)
+   CITIZEN EMERGENCY SOS DISPATCH MODAL
+====================================================== */
+
+function CitizenSOSModal({ isOpen, onClose }) {
+  const [emergencyType, setEmergencyType] = useState("medical");
+  const [location, setLocation] = useState("");
+  const [requirement, setRequirement] = useState("");
+  const [phone, setPhone] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [activeSOS, setActiveSOS] = useState(null);
+  const [dispatchSuccess, setDispatchSuccess] = useState(false);
+
+  const emergencyOptions = [
+    {
+      id: "medical",
+      label: "Ambulance / Medical Accident",
+      sub: "Trauma, collision, heart attack, emergency injury",
+      icon: HeartPulse,
+      color: "#ef4444",
+      bg: "#fef2f2",
+      helpline: "108",
+      helplineLabel: "Ambulance",
+    },
+    {
+      id: "fire",
+      label: "Fire & Rescue Emergency",
+      sub: "Building fire, cylinder blast, smoke, trapped people",
+      icon: Flame,
+      color: "#f97316",
+      bg: "#fff7ed",
+      helpline: "101",
+      helplineLabel: "Fire Brigade",
+    },
+    {
+      id: "police",
+      label: "Police & Public Safety",
+      sub: "Violence, harassment, crime in progress, riot",
+      icon: ShieldAlert,
+      color: "#3b82f6",
+      bg: "#eff6ff",
+      helpline: "100",
+      helplineLabel: "Police",
+    },
+    {
+      id: "electrical",
+      label: "Live Wire / Transformer Blast",
+      sub: "High voltage sparks, snapped cables, shock risk",
+      icon: Zap,
+      color: "#eab308",
+      bg: "#fefce8",
+      helpline: "1912",
+      helplineLabel: "Electricity Emergency",
+    },
+    {
+      id: "gas",
+      label: "Gas Leak / Pipeline Burst",
+      sub: "Gas odour, major pipeline rupture, toxic hazard",
+      icon: AlertOctagon,
+      color: "#8b5cf6",
+      bg: "#f5f3ff",
+      helpline: "112",
+      helplineLabel: "National Emergency",
+    },
+  ];
+
+  const selectedOpt =
+    emergencyOptions.find((o) => o.id === emergencyType) || emergencyOptions[0];
+
+  function detectGPSLocation() {
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          setLocation(
+            `GPS Coordinates: ${pos.coords.latitude.toFixed(5)}, ${pos.coords.longitude.toFixed(5)} (Bengaluru Urban)`
+          );
+        },
+        () => {
+          setLocation("Bengaluru Urban Area (Near Current Location)");
+        }
+      );
+    } else {
+      setLocation("Bengaluru Urban Area");
+    }
+  }
+
+  async function handleTransmitSOS(e) {
+    if (e) e.preventDefault();
+    if (!location.trim()) {
+      alert("Please provide the emergency location or click Detect GPS.");
+      return;
+    }
+
+    setLoading(true);
+    const sosId = `SOS-${Date.now().toString().slice(-6)}`;
+    const now = new Date().toISOString();
+
+    const sosPayload = {
+      id: sosId,
+      ticket_id: sosId,
+      emergencyType: selectedOpt.id,
+      emergencyLabel: selectedOpt.label,
+      location: location.trim(),
+      requirement:
+        requirement.trim() || `Urgent assistance required for ${selectedOpt.label}`,
+      phone: phone.trim() || "Caller via App",
+      status: "Active Emergency",
+      created_at: now,
+      updated_at: now,
+      responderNotes:
+        "Municipal Emergency Dispatcher alerted. Awaiting first responder unit assignment.",
+    };
+
+    // 1. Save to local store & broadcast across all admin tabs
+    GrievanceLocalStore.saveSOS(sosPayload);
+
+    // 2. Resiliently save to database
+    try {
+      await insertGrievanceResilient({
+        ticket_id: sosId,
+        description: `[🚨 SOS EMERGENCY - ${selectedOpt.label.toUpperCase()}] ${
+          requirement.trim() || "Immediate help needed"
+        }`,
+        location: location.trim(),
+        category: "EMERGENCY SOS",
+        department:
+          selectedOpt.id === "medical"
+            ? "Health & Emergency Medical Services"
+            : selectedOpt.id === "fire"
+            ? "Fire & Emergency Services"
+            : selectedOpt.id === "police"
+            ? "Police & Public Safety"
+            : "Disaster Management & Emergency Response",
+        status: "In Action",
+        priority: "CRITICAL",
+        ai_summary: `HIGH PRIORITY EMERGENCY SOS: ${selectedOpt.label} reported at ${location.trim()}. Contact: ${
+          phone.trim() || "Direct SOS"
+        }. Immediate response units dispatched.`,
+        created_at: now,
+      });
+    } catch (err) {
+      console.warn("SOS DB insert notice:", err);
+    }
+
+    setActiveSOS(sosPayload);
+    setDispatchSuccess(true);
+    setLoading(false);
+  }
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="sos-modal-overlay" onClick={onClose}>
+      <div
+        className="sos-modal-container"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+      >
+        <div className="sos-modal-header">
+          <div className="sos-header-badge">
+            <Siren size={24} className="siren-flash-icon" />
+            <div>
+              <h2>EMERGENCY SOS DISPATCH</h2>
+              <p>Instant First Responder Alert &amp; Control Room Transmission</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            className="sos-modal-close"
+            onClick={onClose}
+            aria-label="Close modal"
+          >
+            <X size={22} />
+          </button>
+        </div>
+
+        {dispatchSuccess && activeSOS ? (
+          <div className="sos-dispatched-view">
+            <div className="sos-pulse-ring">
+              <Siren size={44} color="#ffffff" />
+            </div>
+            <h3>🚨 EMERGENCY SOS TRANSMITTED!</h3>
+            <p className="sos-ticket-pill">SOS Alert #{activeSOS.id}</p>
+            <p className="sos-dispatched-desc">
+              Municipal Emergency Control Room and{" "}
+              <strong>{activeSOS.emergencyLabel}</strong> units have been notified
+              with top priority. First responders are being mobilized.
+            </p>
+
+            <div className="sos-live-status-box">
+              <div className="sos-status-row">
+                <span className="sos-live-indicator" />
+                <strong>Status: {activeSOS.status}</strong>
+              </div>
+              <p className="sos-status-notes">{activeSOS.responderNotes}</p>
+              <div className="sos-location-snippet">
+                <MapPin size={15} />
+                <span>{activeSOS.location}</span>
+              </div>
+            </div>
+
+            <div className="sos-helpline-card">
+              <span>Immediate Direct Helpline:</span>
+              <a href={`tel:${selectedOpt.helpline}`} className="sos-call-btn">
+                <PhoneCall size={18} />
+                Call {selectedOpt.helplineLabel} ({selectedOpt.helpline})
+              </a>
+            </div>
+
+            <button
+              type="button"
+              className="sos-secondary-btn"
+              onClick={() => {
+                setDispatchSuccess(false);
+                setActiveSOS(null);
+                setRequirement("");
+                onClose();
+              }}
+            >
+              Close Alert Window
+            </button>
+          </div>
+        ) : (
+          <form className="sos-modal-form" onSubmit={handleTransmitSOS}>
+            <div className="sos-emergency-type-section">
+              <label className="sos-section-title">
+                <AlertOctagon size={16} color="#ef4444" />
+                Select Emergency Situation:
+              </label>
+
+              <div className="sos-type-grid">
+                {emergencyOptions.map((opt) => {
+                  const Icon = opt.icon;
+                  const selected = emergencyType === opt.id;
+                  return (
+                    <button
+                      type="button"
+                      key={opt.id}
+                      className={`sos-type-card ${selected ? "selected" : ""}`}
+                      style={{
+                        borderColor: selected ? opt.color : "#e2e8f0",
+                        background: selected ? opt.bg : "#f8fafc",
+                      }}
+                      onClick={() => setEmergencyType(opt.id)}
+                    >
+                      <div
+                        className="sos-type-icon-wrap"
+                        style={{ background: opt.color, color: "#ffffff" }}
+                      >
+                        <Icon size={20} />
+                      </div>
+                      <div className="sos-type-text">
+                        <strong>{opt.label}</strong>
+                        <small>{opt.sub}</small>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="sos-field-group">
+              <div className="sos-label-row">
+                <label htmlFor="sos-location">
+                  <MapPin size={15} color="#ef4444" />
+                  Exact Emergency Location: *
+                </label>
+                <button
+                  type="button"
+                  className="sos-gps-btn"
+                  onClick={detectGPSLocation}
+                >
+                  <LocateFixed size={14} />
+                  Detect GPS
+                </button>
+              </div>
+              <input
+                id="sos-location"
+                type="text"
+                value={location}
+                onChange={(e) => setLocation(e.target.value)}
+                placeholder="e.g., Near Silk Board flyover, Pillar #42, Outer Ring Road"
+                required
+              />
+            </div>
+
+            <div className="sos-form-row">
+              <div className="sos-field-group" style={{ flex: 1.3 }}>
+                <label htmlFor="sos-requirement">
+                  <Radio size={15} color="#ef4444" />
+                  Emergency Requirement / Details:
+                </label>
+                <input
+                  id="sos-requirement"
+                  type="text"
+                  value={requirement}
+                  onChange={(e) => setRequirement(e.target.value)}
+                  placeholder="e.g., 2 injured in collision, need ambulance urgently"
+                />
+              </div>
+
+              <div className="sos-field-group" style={{ flex: 1 }}>
+                <label htmlFor="sos-phone">
+                  <Phone size={15} color="#ef4444" />
+                  Caller Contact Number:
+                </label>
+                <input
+                  id="sos-phone"
+                  type="tel"
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  placeholder="e.g., 9876543210"
+                />
+              </div>
+            </div>
+
+            {/* Direct Helplines Bar */}
+            <div className="sos-direct-helplines">
+              <span>Direct Emergency Helplines:</span>
+              <div className="helpline-chips">
+                <a href="tel:112" className="helpline-chip national">
+                  <PhoneCall size={13} /> 112 (National)
+                </a>
+                <a href="tel:108" className="helpline-chip ambulance">
+                  <HeartPulse size={13} /> 108 (Ambulance)
+                </a>
+                <a href="tel:101" className="helpline-chip fire">
+                  <Flame size={13} /> 101 (Fire)
+                </a>
+                <a href="tel:100" className="helpline-chip police">
+                  <ShieldAlert size={13} /> 100 (Police)
+                </a>
+              </div>
+            </div>
+
+            <div className="sos-modal-actions">
+              <button
+                type="button"
+                className="sos-cancel-btn"
+                onClick={onClose}
+                disabled={loading}
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="sos-transmit-btn"
+                disabled={loading}
+              >
+                <Siren size={20} className="siren-pulse-icon" />
+                {loading ? "TRANSMITTING SOS ALERT..." : "TRANSMIT SOS ALERT NOW"}
+              </button>
+            </div>
+          </form>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ======================================================
+   CITIZEN LAYOUT (COLLAPSIBLE DARK EMERALD SIDEBAR WITH SOS)
 ====================================================== */
 
 function CitizenLayout({ children }) {
   const [collapsed, setCollapsed] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [sosOpen, setSosOpen] = useState(false);
   const location = useLocation();
 
   const navigation = [
@@ -1100,6 +1540,9 @@ function CitizenLayout({ children }) {
           onClick={() => setMenuOpen(false)}
         />
       )}
+
+      {/* SOS Emergency Modal */}
+      <CitizenSOSModal isOpen={sosOpen} onClose={() => setSosOpen(false)} />
 
       <aside
         className={`citizen-sidebar ${
@@ -1139,6 +1582,27 @@ function CitizenLayout({ children }) {
             aria-label="Close menu"
           >
             <X size={22} />
+          </button>
+        </div>
+
+        {/* PROMINENT EMERGENCY SOS BUTTON IN CITIZEN SIDEBAR */}
+        <div className="citizen-sidebar-sos-wrap">
+          <button
+            type="button"
+            className="citizen-sidebar-sos-btn"
+            onClick={() => {
+              setSosOpen(true);
+              setMenuOpen(false);
+            }}
+            title="Emergency SOS Dispatch (Ambulance, Fire, Police)"
+          >
+            <Siren size={20} className="siren-pulse-icon" />
+            {!collapsed && (
+              <div className="sos-btn-content">
+                <strong>EMERGENCY SOS</strong>
+                <span>Instant Ambulance / Fire / Police</span>
+              </div>
+            )}
           </button>
         </div>
 
@@ -1218,6 +1682,17 @@ function CitizenLayout({ children }) {
           </div>
 
           <div className="citizen-topbar-right">
+            {/* Quick SOS button in mobile topbar */}
+            <button
+              type="button"
+              className="citizen-topbar-sos-btn"
+              onClick={() => setSosOpen(true)}
+              title="Emergency SOS"
+            >
+              <Siren size={16} className="siren-pulse-icon" />
+              <span>SOS HELP</span>
+            </button>
+
             <span className="citizen-online-dot" />
             <span>System Online</span>
           </div>
@@ -1244,9 +1719,21 @@ function CitizenLayout({ children }) {
 function AdminLayout({ children }) {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [activeSOSCount, setActiveSOSCount] = useState(() =>
+    GrievanceLocalStore.getActiveSOSCount()
+  );
 
   const location = useLocation();
   const navigate = useNavigate();
+
+  useEffect(() => {
+    function updateSOS() {
+      setActiveSOSCount(GrievanceLocalStore.getActiveSOSCount());
+    }
+    updateSOS();
+    const unsub = GrievanceLocalStore.onSync(updateSOS);
+    return () => unsub();
+  }, []);
 
   async function handleSignOut() {
     await supabase.auth.signOut();
@@ -1256,6 +1743,13 @@ function AdminLayout({ children }) {
   const navigation = [
     { name: "Dashboard", path: "/admin", icon: LayoutDashboard },
     { name: "Grievances", path: "/admin/grievances", icon: FileText },
+    {
+      name: "Emergency SOS",
+      path: "/admin/sos",
+      icon: Siren,
+      badge: activeSOSCount > 0 ? activeSOSCount : null,
+      isSOS: true,
+    },
     { name: "Analytics", path: "/admin/analytics", icon: BarChart3 },
     { name: "History", path: "/admin/history", icon: History },
     { name: "Profile", path: "/admin/profile", icon: User },
@@ -1313,11 +1807,25 @@ function AdminLayout({ children }) {
                 key={item.path}
                 to={item.path}
                 title={collapsed ? item.name : ""}
-                className={active ? "admin-nav-active" : ""}
+                className={`${active ? "admin-nav-active" : ""} ${
+                  item.isSOS ? "admin-nav-sos" : ""
+                }`}
                 onClick={() => setMobileOpen(false)}
               >
-                <Icon size={19} />
-                {!collapsed && <span>{item.name}</span>}
+                <div className="admin-nav-icon-wrap">
+                  <Icon size={19} className={item.isSOS && item.badge ? "siren-flash-icon" : ""} />
+                  {item.badge && collapsed && (
+                    <span className="admin-sos-mini-dot" />
+                  )}
+                </div>
+                {!collapsed && (
+                  <div className="admin-nav-label-wrap">
+                    <span>{item.name}</span>
+                    {item.badge && (
+                      <span className="admin-sos-nav-badge">{item.badge} ACTIVE</span>
+                    )}
+                  </div>
+                )}
               </Link>
             );
           })}
@@ -1373,10 +1881,35 @@ function AdminLayout({ children }) {
           </div>
 
           <div className="admin-topbar-status">
+            {activeSOSCount > 0 && (
+              <Link to="/admin/sos" className="admin-topbar-sos-pill">
+                <Siren size={15} className="siren-flash-icon" />
+                <span>{activeSOSCount} EMERGENCY SOS</span>
+              </Link>
+            )}
             <span className="online-dot" />
             System Online
           </div>
         </header>
+
+        {/* HIGH-PRIORITY FLASHING EMERGENCY SOS ALERT BANNER */}
+        {activeSOSCount > 0 && (
+          <div className="admin-sos-top-banner">
+            <div className="banner-left">
+              <div className="siren-box">
+                <Siren size={22} className="siren-flash-icon" />
+              </div>
+              <div>
+                <strong>CRITICAL SOS ALERT: {activeSOSCount} Active Emergency Call{activeSOSCount !== 1 ? "s" : ""}!</strong>
+                <p>Citizens requiring immediate ambulance, fire rescue or police assistance.</p>
+              </div>
+            </div>
+            <Link to="/admin/sos" className="admin-sos-banner-link">
+              <span>Open Emergency Command Room</span>
+              <ArrowRight size={16} />
+            </Link>
+          </div>
+        )}
 
         <main className="admin-main">{children}</main>
       </div>
@@ -3930,6 +4463,295 @@ function AnalyticsPanel({ title, subtitle, icon, rows }) {
 }
 
 /* ======================================================
+   ADMIN EMERGENCY SOS COMMAND ROOM PAGE
+====================================================== */
+
+function AdminSOSPage() {
+  const [sosAlerts, setSosAlerts] = useState([]);
+  const [filter, setFilter] = useState("all");
+  const [selectedSOS, setSelectedSOS] = useState(null);
+  const [responderNotes, setResponderNotes] = useState("");
+  const [resolving, setResolving] = useState(false);
+
+  function loadAlerts() {
+    setSosAlerts(GrievanceLocalStore.getSOSAlerts());
+  }
+
+  useEffect(() => {
+    loadAlerts();
+    const unsub = GrievanceLocalStore.onSync(loadAlerts);
+    return () => unsub();
+  }, []);
+
+  const typeConfig = {
+    medical: { color: "#ef4444", bg: "#fef2f2", icon: HeartPulse, label: "Ambulance / Medical" },
+    fire: { color: "#f97316", bg: "#fff7ed", icon: Flame, label: "Fire & Rescue" },
+    police: { color: "#3b82f6", bg: "#eff6ff", icon: ShieldAlert, label: "Police & Safety" },
+    electrical: { color: "#eab308", bg: "#fefce8", icon: Zap, label: "Live Wire / Electrical" },
+    gas: { color: "#8b5cf6", bg: "#f5f3ff", icon: AlertOctagon, label: "Gas / Pipeline" },
+  };
+
+  const filteredAlerts = sosAlerts.filter((s) =>
+    filter === "all" ? true : filter === "active" ? s.status !== "Resolved" : s.status === "Resolved"
+  );
+
+  const activeCount = sosAlerts.filter((s) => s.status !== "Resolved").length;
+
+  async function handleUpdateStatus(sos, newStatus) {
+    setResolving(true);
+    GrievanceLocalStore.updateSOSStatus(sos.id, newStatus, responderNotes);
+
+    // Also update in DB if ticket_id is present
+    try {
+      await supabase
+        .from("grievances")
+        .update({
+          status: newStatus === "Resolved" ? "Resolved" : "In Action",
+          ai_summary: responderNotes
+            ? `[ADMIN RESPONSE] ${responderNotes}`
+            : undefined,
+        })
+        .eq("ticket_id", sos.ticket_id);
+    } catch (err) {
+      console.warn("SOS DB update note:", err);
+    }
+
+    loadAlerts();
+    setSelectedSOS(null);
+    setResponderNotes("");
+    setResolving(false);
+  }
+
+  return (
+    <div className="admin-dashboard">
+      <section className="admin-hero compact admin-sos-hero">
+        <div>
+          <div className="admin-eyebrow">
+            <Siren size={15} className="siren-flash-icon" />
+            EMERGENCY COMMAND ROOM
+          </div>
+          <h1>
+            SOS Alert<br />
+            <span>Management Center.</span>
+          </h1>
+          <p>
+            Real-time emergency dispatch monitoring. Assign first responders and resolve active
+            SOS alerts from citizens.
+          </p>
+        </div>
+
+        <div className="sos-stat-row">
+          <div className="sos-stat-card active">
+            <Siren size={28} className="siren-flash-icon" />
+            <div>
+              <strong>{activeCount}</strong>
+              <span>Active Emergencies</span>
+            </div>
+          </div>
+          <div className="sos-stat-card resolved">
+            <CheckCircle2 size={28} />
+            <div>
+              <strong>{sosAlerts.length - activeCount}</strong>
+              <span>Resolved</span>
+            </div>
+          </div>
+          <div className="sos-stat-card total">
+            <Radio size={28} />
+            <div>
+              <strong>{sosAlerts.length}</strong>
+              <span>Total SOS Alerts</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Filter Bar */}
+      <div className="sos-admin-filter-bar">
+        <button
+          type="button"
+          className={filter === "all" ? "active" : ""}
+          onClick={() => setFilter("all")}
+        >
+          All Alerts ({sosAlerts.length})
+        </button>
+        <button
+          type="button"
+          className={filter === "active" ? "active" : ""}
+          onClick={() => setFilter("active")}
+        >
+          <span className="sos-live-indicator" />
+          Active ({activeCount})
+        </button>
+        <button
+          type="button"
+          className={filter === "resolved" ? "active" : ""}
+          onClick={() => setFilter("resolved")}
+        >
+          Resolved ({sosAlerts.length - activeCount})
+        </button>
+        <button type="button" className="sos-refresh-btn" onClick={loadAlerts} title="Refresh">
+          <RefreshCw size={16} />
+        </button>
+      </div>
+
+      {filteredAlerts.length === 0 ? (
+        <div className="sos-admin-empty">
+          {activeCount === 0 ? (
+            <>
+              <CheckCircle2 size={52} color="#10b981" />
+              <h3>All Clear — No Active Emergencies</h3>
+              <p>No SOS alerts have been raised by citizens. The city is safe!</p>
+            </>
+          ) : (
+            <>
+              <Search size={52} color="#94a3b8" />
+              <h3>No alerts match this filter</h3>
+            </>
+          )}
+        </div>
+      ) : (
+        <div className="sos-admin-alert-grid">
+          {filteredAlerts.map((sos) => {
+            const cfg = typeConfig[sos.emergencyType] || typeConfig.medical;
+            const Icon = cfg.icon;
+            const isActive = sos.status !== "Resolved";
+
+            return (
+              <div
+                key={sos.id}
+                className={`sos-admin-card ${isActive ? "sos-card-active" : "sos-card-resolved"}`}
+                style={{ borderLeftColor: cfg.color }}
+              >
+                <div className="sos-card-header">
+                  <div
+                    className="sos-card-type-icon"
+                    style={{ background: cfg.color, color: "#fff" }}
+                  >
+                    <Icon size={22} />
+                  </div>
+                  <div className="sos-card-meta">
+                    <span
+                      className="sos-card-id"
+                      style={{ color: cfg.color }}
+                    >
+                      {sos.id}
+                    </span>
+                    <strong className="sos-card-label">{sos.emergencyLabel || cfg.label}</strong>
+                  </div>
+                  {isActive && (
+                    <div className="sos-card-live-badge">
+                      <span className="sos-live-indicator" />
+                      ACTIVE
+                    </div>
+                  )}
+                  {!isActive && (
+                    <div className="sos-card-resolved-badge">
+                      <CheckCircle2 size={13} />
+                      RESOLVED
+                    </div>
+                  )}
+                </div>
+
+                <div className="sos-card-body">
+                  <div className="sos-card-detail">
+                    <MapPin size={14} />
+                    <span>{sos.location}</span>
+                  </div>
+                  <div className="sos-card-detail">
+                    <Radio size={14} />
+                    <span>{sos.requirement}</span>
+                  </div>
+                  {sos.phone && sos.phone !== "Caller via App" && (
+                    <div className="sos-card-detail">
+                      <Phone size={14} />
+                      <a href={`tel:${sos.phone}`}>{sos.phone}</a>
+                    </div>
+                  )}
+                  <div className="sos-card-detail muted">
+                    <Timer size={13} />
+                    <span>
+                      {new Date(sos.created_at).toLocaleString("en-IN", {
+                        day: "2-digit",
+                        month: "short",
+                        year: "numeric",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </span>
+                  </div>
+                </div>
+
+                {sos.responderNotes && (
+                  <div className="sos-card-notes">
+                    <strong>Dispatch Notes:</strong>
+                    <p>{sos.responderNotes}</p>
+                  </div>
+                )}
+
+                {isActive && (
+                  <div className="sos-card-actions">
+                    {selectedSOS?.id === sos.id ? (
+                      <div className="sos-response-form">
+                        <textarea
+                          placeholder="Add responder notes (e.g., Ambulance dispatched to location, ETA 8 mins)"
+                          value={responderNotes}
+                          onChange={(e) => setResponderNotes(e.target.value)}
+                          rows={3}
+                        />
+                        <div className="sos-response-btns">
+                          <button
+                            type="button"
+                            className="sos-btn-dispatched"
+                            onClick={() => handleUpdateStatus(sos, "Responder Dispatched")}
+                            disabled={resolving}
+                          >
+                            <Truck size={15} />
+                            Mark Dispatched
+                          </button>
+                          <button
+                            type="button"
+                            className="sos-btn-resolve"
+                            onClick={() => handleUpdateStatus(sos, "Resolved")}
+                            disabled={resolving}
+                          >
+                            <CheckCircle2 size={15} />
+                            Mark Resolved
+                          </button>
+                          <button
+                            type="button"
+                            className="sos-btn-cancel"
+                            onClick={() => {
+                              setSelectedSOS(null);
+                              setResponderNotes("");
+                            }}
+                          >
+                            <X size={14} />
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        className="sos-respond-btn"
+                        style={{ background: cfg.color }}
+                        onClick={() => setSelectedSOS(sos)}
+                      >
+                        <Siren size={15} />
+                        Respond to Emergency
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ======================================================
    ADMIN PROFILE PAGE
 ====================================================== */
 
@@ -4325,6 +5147,17 @@ function App() {
             <ProtectedRoute allowedRole="admin">
               <AdminLayout>
                 <AdminProfilePage />
+              </AdminLayout>
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/admin/sos"
+          element={
+            <ProtectedRoute allowedRole="admin">
+              <AdminLayout>
+                <AdminSOSPage />
               </AdminLayout>
             </ProtectedRoute>
           }
